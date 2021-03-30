@@ -21,6 +21,9 @@ upload_parser = api.parser()
 upload_parser.add_argument('image', location='files',
                            type=FileStorage, required=True,
                            help="Base64 encoded Image String")
+upload_parser.add_argument('intensity', location='form',
+                           type=int, required=True,
+                           help="Dehaze intensity")
 
 
 @api.route('/dehaze')
@@ -30,10 +33,12 @@ class Dehaze(Resource):
     def post(self):
         args = upload_parser.parse_args()
         input_byte_array = args['image'].read()
+        intensity = args['intensity']
+        print("INTENSITY", intensity)
 
         try:
             img = Image.open(BytesIO(input_byte_array))
-            dehazed_img = dehazer.dehaze(img)
+            dehazed_img = dehazer.dehaze(img, intensity)
 
             im_file = BytesIO()
             dehazed_img.save(im_file, format="JPEG")

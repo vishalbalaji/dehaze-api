@@ -2,37 +2,38 @@ import cv2
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
+import os
 
 
-def guided_dehaze(img, mask):
+def estimate_atmospheric_light(img, w_size=15):
 
-    yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
-    yuv_plane = cv2.split(yuv)
-    dtype = mask.dtype
+    size = img.shape[:2]
+    k = int(0.001*np.prod(size))
+    j_dark = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)[:, :, 0]
+    idx = np.argpartition(-j_dark.ravel(), k)[:k]
+    x, y = np.hsplit(np.column_stack(np.unravel_index(idx, size)), 2)
 
-    # Pre-Processing
-    mask = 255 - mask
-    mask = (mask / 1.5).astype(dtype)
+    A = np.array([img[x, y, 0].max(), img[x, y, 1].max(), img[x, y, 2].max()])
+    return A
 
-    yuv_plane[0] = cv2.subtract(yuv_plane[0], mask)
-    yuv = cv2.merge(yuv_plane)
 
-    final = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+def atm(img, mask, intensity=5):
 
-    hsv = cv2.cvtColor(final, cv2.COLOR_BGR2HSV)
-    v = np.mean(hsv[:, :, 2])
+    in_img = img.copy()
 
-    # Post-Processing
-    brightness = np.interp(v, (0, 255), (100, 50))
-    gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
-    c = gray.std()
-    contrast = np.interp(c, (0, 255), (100, 50))
-    final = np.int16(final)
-    final = final * (contrast/127+1) - contrast + brightness
-    final = np.clip(final, 0, 255)
-    final = np.uint8(final)
+    mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    intensity = np.interp(intensity, (1, 10), (1.4, 0.5))
+    print(intensity)
+    mask = mask * intensity
+    mask = mask / 255
+    mask[mask == 0] = 0.01
 
-    return final
+    A = estimate_atmospheric_light(img)
+
+    in_img = ((in_img.astype(mask.dtype) - A.astype(mask.dtype)) /
+              mask) + A.astype(mask.dtype)
+
+    return in_img
 
 
 class Dehazer:
@@ -40,8 +41,9 @@ class Dehazer:
     def __init__(self):
         self.model = ort.InferenceSession('model.onnx')
 
-    def dehaze(self, img):
+    def dehaze(self, img, intensity):
 
+        # Preprocess
         in_size = (460, 460)
 
         in_img = img.resize(in_size)
@@ -57,6 +59,7 @@ class Dehazer:
         in_img = in_img.transpose(1, 0, 2)
         in_img = np.expand_dims(in_img, 0)
 
+        # Transmission map estimation
         onnx_input = {'x': in_img}
         mask = self.model.run(None, onnx_input)[0]
 
@@ -67,7 +70,11 @@ class Dehazer:
         img = np.array(img)
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-        dehazed_img = guided_dehaze(img, mask)
+        # Image dehazing
+        dehazed_img = atm(img, mask, intensity=intensity)
+        cv2.imwrite('tmp.png', dehazed_img)
+        dehazed_img = cv2.imread('tmp.png')
+        os.remove('tmp.png')
         dehazed_img = cv2.cvtColor(dehazed_img, cv2.COLOR_BGR2RGB)
         dehazed_img = Image.fromarray(dehazed_img)
 
